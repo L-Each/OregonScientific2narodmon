@@ -1,23 +1,20 @@
 #include <LiquidCrystal_I2C.h>// библиотеки для дисплея
 #include <Wire.h>
-//#define DISABLE_DEBUG // если нужен вывод в Serial - закомментируйте эту строчку
+#include <SFE_BMP180.h>
+
+
+#define PRESSURE_MEASUREMENT_INTERVAL 2000
 #define LED 13 // LED на D13
-#define CHANNEL 1
+#define CHANNEL 3
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+SFE_BMP180 pressure;
 
-
-static byte hisip[] = { 94, 19, 113, 221 }; //IP адрес сервера narodmon.r
-// температура
+// температура, влажность и батарейка
 float t[2];
-
-// влажность
 byte h[2];
-
-// батарейка
 byte b[2];
 
-long pressure = 0;
 unsigned long dispNow = 0;
 
 // Oregon V2 decoder added - Dominique Pierre
@@ -210,96 +207,82 @@ volatile word pulse;
 
 void ext_int_1(void) {
   static word last;
-  // determine the pulse length in microseconds, for either polarity
+  // Определяем длину "пульса" в микросекундах, "for either polarity"
   pulse = micros() - last;
   last += pulse;
 }
 
-void reportSerial (const char* s, class DecodeOOK& decoder) {
-  byte pos;
-  const byte* data = decoder.getData(pos);
-#ifndef DISABLE_DEBUG
-#endif
-  // Outside/Water Temp : THGN132N,...
-  if (data[0] == 0x1A && data[1] == 0x2D)
-  {
-#ifndef DISABLE_DEBUG
-    Serial.print("[THGN132N,...] Id:");
-    Serial.print(data[3], HEX);
-    Serial.print(", Channel:");
-    Serial.print(channel(data));
-    Serial.print(", temp:");
-    Serial.print(temperature(data));
-    Serial.print(", hum:");
-    Serial.print(humidity(data));
-    Serial.print(", bat:");
-    Serial.print(battery(data));
-    Serial.println();
-#endif
 
-    // используем только 2 датчика THGN132N на 1 и 2 канале
-    if (channel(data) > 0 && channel(data) < 4) {
-      t[channel(data) - 1] = temperature(data);
-      h[channel(data) - 1] = humidity(data);
-      b[channel(data) - 1] = battery(data);
-    }
-  }
-  decoder.resetDecoder();
-}
 void reportLCD (const char* s, class DecodeOOK& decoder) {
   byte pos;
   const byte* data = decoder.getData(pos);
-  // Outside/Water Temp : THGN132N,...
+  
   if (data[0] == 0x1A && data[1] == 0x2D)
   {
-    if (channel(data) == CHANNEL) {// установка канала
+    if (channel(data) == CHANNEL) { // Считываем данные с датчика, канал которого объявлен в начале кода
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Temp:");
       lcd.setCursor(5, 0);
-      lcd.print(temperature(data));
+      lcd.print(temperature(data)); // Температура
       lcd.setCursor(9, 0);
       lcd.print("'C");
       lcd.setCursor(0, 1);
-      lcd.print("Hum:");
-      lcd.setCursor(5, 1);
-      lcd.print(humidity(data));
-      lcd.setCursor(7, 1);
-      lcd.print("%");
-    }
-
-    // используем только 2 датчика THGN132N на 1 и 2 канале
-    /*if (channel(data) > 0 && channel(data) < 4) {
-      t[channel(data) - 1] = temperature(data);
-      h[channel(data) - 1] = humidity(data);
-      b[channel(data) - 1] = battery(data);
-    }*/
+      lcd.print("Hum:");         // Будет нечто вроде, где "_" - пустые клетки
+      lcd.setCursor(4, 1);       //  _________________
+      lcd.print(humidity(data)); // /________________/|
+      lcd.setCursor(6, 1);       // |Temp:9.80'C_____||
+      lcd.print("%");            // |Hum:50%_752.22mm|/
+    }                            //
   }
-  decoder.resetDecoder();
+  decoder.resetDecoder(); // Я не знаю, что это такое, но это должно быть
 }
 uint8_t percent[8] = {B11100, B10100, B11100, B00000, B00000, B00000, B00000, B00000};
+long time;
 void setup () {
-#ifndef DISABLE_DEBUG
-  Serial.begin(115200);
-  Serial.println("\n[WeatherStation]");
-#endif
-  // включим дисплей
+  
+  pressure.begin();
+  // А как же без дисплея?
   lcd.init();
   lcd.backlight();
   lcd.clear();
   lcd.setCursor(5, 0);
-  lcd.print("Load...");
+  lcd.print("Loading...");
   lcd.createChar(0, percent);
-  pinMode(2, INPUT);  // D2 - RF-модуль
-  digitalWrite(2, 1); // включим подтягивающий резистор sc
-  pinMode(LED, OUTPUT);  // LED
-
-  attachInterrupt(0, ext_int_1, CHANGE);
+  pinMode(2, INPUT);  // Здесь подключен приемник
+  digitalWrite(2, 1); // Подтягивающий резистор
+  attachInterrupt(0, ext_int_1, CHANGE); // Типа прерывание(тоже нужно)
 }
-
+long previousTime; // Тайминг для датчика давления
 void loop () {
+
+  long currentTime = millis(); // Текущее время
+  char status; // Тут все ясно
+  double P, T; // И тут
+  if (currentTime - previousTime > PRESSURE_MEASUREMENT_INTERVAL) { // Показания на экране обновляются раз в PRESSURE_MEASUREMENT_INTERVAL
+    previousTime = currentTime;
+    status = pressure.startTemperature();
+    if (status != 0) {
+      delay(status);
+      status = pressure.getTemperature(T);
+      if (status != 0) {
+        status = pressure.startPressure(3);
+        if (status != 0) {
+          delay(status);
+          status = pressure.getPressure(P, T);
+          if (status != 0) {
+            lcd.setCursor(8, 1);
+            lcd.print(P * 0.75);
+            lcd.setCursor(14, 1);
+            lcd.print("mm");
+          }
+        }
+      }
+    }
+  }
   noInterrupts();
   word p = pulse;
+
 
   pulse = 0;
   interrupts();
@@ -310,6 +293,8 @@ void loop () {
       digitalWrite(LED, HIGH);
     }
   }
+
+  
 
 }
 
